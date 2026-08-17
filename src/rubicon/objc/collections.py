@@ -54,7 +54,13 @@ class ObjCStrInstance(ObjCInstance):
             return super().__eq__(other)
 
     def __ne__(self, other):
-        return not self.__eq__(other)
+        # __eq__ returns NotImplemented for non-string operands. That value must be
+        # passed through untouched, so that Python can fall back to the reflected
+        # operation; negating it would treat it as a truthy result.
+        result = self.__eq__(other)
+        if result is NotImplemented:
+            return result
+        return not result
 
     # Note: We cannot define a __hash__ for NSString objects; doing so would violate
     # the Python convention that mutable objects should not be hashable. Although we
@@ -139,7 +145,7 @@ class ObjCStrInstance(ObjCInstance):
     def __mul__(self, other):
         try:
             count = operator.index(other)
-        except AttributeError:
+        except TypeError:
             return NotImplemented
 
         if count <= 0:

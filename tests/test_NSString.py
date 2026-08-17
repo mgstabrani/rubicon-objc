@@ -14,6 +14,8 @@ NEEDLES = ["", "a", "bcd", "def", HAYSTACK, "nope", "dcb"]
 RANGES = [(None, None), (None, 6), (6, None), (4, 10)]
 # Objects that are not strings, and cannot be converted to one.
 NON_STRINGS = (42, 4.2, None, [1, 2], object())
+# Objects that cannot be interpreted as an integer, so cannot be a repeat count.
+NON_INTEGERS = (4.2, None, "2", [1, 2], object())
 
 
 def assert_method(py_value, method, *args, **kwargs):
@@ -139,7 +141,10 @@ def test_nsstring_eq_non_string(other):
     """A NSString is never equal to a non-string object."""
     nsstr = ns_from_py("abcdef")
 
+    # Both operators are checked explicitly: __eq__ returns NotImplemented for a
+    # non-string, and __ne__ must pass that through rather than negating it.
     assert (nsstr == other) is False
+    assert (nsstr != other) is True
 
 
 @pytest.mark.parametrize("other", NON_STRINGS)
@@ -283,6 +288,21 @@ def test_nsstring_add_non_string(other):
     # exact message depends on its type.
     with pytest.raises(TypeError):
         other + ns_str
+
+
+@pytest.mark.parametrize("other", NON_INTEGERS)
+def test_nsstring_mul_non_integer(other):
+    """A NSString cannot be repeated by a non-integer."""
+    ns_str = ns_from_py("abcdef")
+
+    # __mul__ must return NotImplemented so that Python can report the unsupported
+    # operands itself. The exact message depends on the type of the other operand,
+    # but it must never be the one raised by operator.index() internally.
+    for left, right in ((ns_str, other), (other, ns_str)):
+        with pytest.raises(TypeError) as exc_info:
+            left * right
+
+        assert "cannot be interpreted as an integer" not in str(exc_info.value)
 
 
 @pytest.mark.parametrize("other", NON_STRINGS)
