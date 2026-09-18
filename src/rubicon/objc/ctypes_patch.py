@@ -91,7 +91,9 @@ SETFUNC = ctypes.PYFUNCTYPE(
 )
 
 
-if sys.version_info < (3, 13):  # pragma: no-cover-if-gte-py313
+if (  # pragma: no-cover-if-gte-py313
+    sys.version_info < (3, 13) and sys.implementation.name == "cpython"
+):
     # The PyTypeObject structure for the dict class.
     # This is used to determine the size of the PyDictObject structure.
     PyDict_Type = PyTypeObject.from_address(id(dict))
@@ -174,7 +176,9 @@ if sys.version_info < (3, 13):  # pragma: no-cover-if-gte-py313
 
         return StgDictObject.from_address(id(stgdict))
 
-else:  # pragma: no-cover-if-lt-py313
+elif (  # pragma: no-cover-if-lt-py313
+    sys.version_info >= (3, 13) and sys.implementation.name == "cpython"
+):
     # In Python 3.13.0a6 (https://github.com/python/cpython/issues/114314),
     # StgDict was replaced with a new StgInfo data type that requires less
     # metaclass magic.
@@ -231,8 +235,9 @@ else:  # pragma: no-cover-if-lt-py313
         return result
 
 
-ctypes.pythonapi.Py_IncRef.restype = None
-ctypes.pythonapi.Py_IncRef.argtypes = [ctypes.POINTER(PyObject)]
+if sys.implementation.name == "cpython":
+    ctypes.pythonapi.Py_IncRef.restype = None
+    ctypes.pythonapi.Py_IncRef.argtypes = [ctypes.POINTER(PyObject)]
 
 
 def make_callback_returnable(ctype):
@@ -242,7 +247,14 @@ def make_callback_returnable(ctype):
 
     The method is idempotent; it only modifies the type the first time it is invoked on
     a type.
+
+    On non-CPython implementations like PyPy, this function is a no-op since those
+    implementations handle ctypes callbacks differently.
     """
+    # On non-CPython implementations, the patching is not needed or not possible.
+    if sys.implementation.name != "cpython":
+        return ctype
+
     # The presence of the _rubicon_objc_ctypes_patch_getfunc attribute is a
     # sentinel for whether the type has been modified previously.
     if hasattr(ctype, "_rubicon_objc_ctypes_patch_getfunc"):

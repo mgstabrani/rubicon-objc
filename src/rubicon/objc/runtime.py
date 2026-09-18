@@ -218,117 +218,286 @@ if True:
     """
 
 
-@with_encoding(b"@")
-class objc_id(c_void_p):
-    # This documentation is duplicated in the runtime typing stub. Ensure both
-    # locations are updated with any changes.
-    """The [id](https://developer.apple.com/documentation/objectivec/id?language=objc)
-    type from `<objc/objc.h>`.
+def _create_ctypes_subclass(name, base, methods=None, decorators=None):
+    """Create a ctypes-based subclass, with PyPy compatibility.
+
+    On PyPy, ctypes subclassing can fail with metaclass errors. This helper
+    uses type() to create the class, which may work better on PyPy.
     """
+    if methods is None:
+        methods = {}
+
+    cls = type(name, (base,), methods)
+
+    # Apply decorators if provided
+    if decorators:
+        for decorator in decorators:
+            cls = decorator(cls)
+
+    return cls
 
 
-@with_encoding(b"@?")
-class objc_block(objc_id):
-    """The low-level type of block pointers.
+if sys.implementation.name == "cpython":
 
-    This type tells Rubicon's internals that the object in question is a block and not
-    just a regular Objective-C object, which affects method argument and return value
-    conversions. For more details, see [Objective-C Blocks][objc_blocks].
+    @with_encoding(b"@")
+    class objc_id(c_void_p):
+        # This documentation is duplicated in the runtime typing stub. Ensure both
+        # locations are updated with any changes.
+        """The [id](https://developer.apple.com/documentation/objectivec/id?language=objc)
+        type from `<objc/objc.h>`.
+        """
 
-    /// note | Note
+    @with_encoding(b"@?")
+    class objc_block(objc_id):
+        """The low-level type of block pointers.
 
-    This type does not correspond to an actual C type or Objective-C class. Although the
-    internal structure of block objects is documented, as well as the fact that they are
-    Objective-C objects, they do not have a documented type or class name and are not
-    fully defined in any header file.
+        This type tells Rubicon's internals that the object in question is a
+        block and not just a regular Objective-C object, which affects method
+        argument and return value conversions. For more details, see
+        [Objective-C Blocks][objc_blocks].
 
-    Aside from the special conversion behavior, this type is equivalent to
-    [`objc_id`][rubicon.objc.runtime.objc_id].
+        /// note | Note
 
-    ///
-    """
+        This type does not correspond to an actual C type or Objective-C
+        class. Although the internal structure of block objects is documented,
+        as well as the fact that they are Objective-C objects, they do not
+        have a documented type or class name and are not fully defined in any
+        header file.
+
+        Aside from the special conversion behavior, this type is equivalent to
+        [`objc_id`][rubicon.objc.runtime.objc_id].
+
+        ///
+        """
+
+else:
+    objc_id = with_encoding(b"@")(
+        _create_ctypes_subclass(
+            "objc_id",
+            c_void_p,
+            {
+                "__doc__": """The [id](https://developer.apple.com/documentation/objectivec/id?language=objc)
+type from `<objc/objc.h>`.
+""",
+            },
+        )
+    )
+
+    objc_block = with_encoding(b"@?")(
+        _create_ctypes_subclass(
+            "objc_block",
+            objc_id,
+            {
+                "__doc__": (
+                    "The low-level type of block pointers.\n\n"
+                    "This type tells Rubicon's internals that the object in question "
+                    "is a block and not just a regular Objective-C object, which "
+                    "affects method argument and return value conversions. For more "
+                    "details, see [Objective-C Blocks][objc_blocks].\n\n"
+                    "/// note | Note\n\n"
+                    "This type does not correspond to an actual C type or "
+                    "Objective-C class. Although the internal structure of block "
+                    "objects is documented, as well as the fact that they are "
+                    "Objective-C objects, they do not have a documented type or "
+                    "class name and are not fully defined in any header file.\n\n"
+                    "Aside from the special conversion behavior, this type is "
+                    "equivalent to [`objc_id`][rubicon.objc.runtime.objc_id].\n\n"
+                    "///"
+                ),
+            },
+        )
+    )
 
 
-@with_preferred_encoding(b":")
-class SEL(c_void_p):
-    # This documentation is duplicated in the runtime typing stub. Ensure both
-    # locations are updated with any changes.
-    """The [SEL](https://developer.apple.com/documentation/objectivec/sel?language=objc)
-    type from `<objc/objc.h>`.
+if sys.implementation.name == "cpython":
 
-    The constructor can be called with a [`bytes`][] or [`str`][] object to
-    obtain a selector with that value.
+    @with_preferred_encoding(b":")
+    class SEL(c_void_p):
+        # This documentation is duplicated in the runtime typing stub. Ensure both
+        # locations are updated with any changes.
+        """The [SEL](https://developer.apple.com/documentation/objectivec/sel?language=objc)
+        type from `<objc/objc.h>`.
 
-    (The normal arguments supported by [`c_void_p`][ctypes.c_void_p] are
-    still accepted.)
-    """
+        The constructor can be called with a [`bytes`][] or [`str`][] object to
+        obtain a selector with that value.
 
-    @property
-    def name(self):
-        """The selector's name as [`bytes`][]."""
-        if self.value is None:
-            raise ValueError("Cannot get name of null selector")
+        (The normal arguments supported by [`c_void_p`][ctypes.c_void_p] are
+        still accepted.)
+        """
 
-        return libobjc.sel_getName(self)
+        @property
+        def name(self):
+            """The selector's name as [`bytes`][]."""
+            if self.value is None:
+                raise ValueError("Cannot get name of null selector")
 
-    def __new__(cls, init=None):
-        # See class docstring for usage details.
+            return libobjc.sel_getName(self)
+
+        def __new__(cls, init=None):
+            # See class docstring for usage details.
+            if isinstance(init, (bytes, str)):
+                self = libobjc.sel_registerName(ensure_bytes(init))
+                self._inited = True
+                return self
+            else:
+                self = super().__new__(cls, init)
+                self._inited = False
+                return self
+
+        def __init__(self, init=None):
+            # See class docstring for usage details.
+            if not self._inited:
+                super().__init__(init)
+
+        def __repr__(self):
+            return "{cls.__module__}.{cls.__qualname__}({name!r})".format(
+                cls=type(self), name=None if self.value is None else self.name
+            )
+
+else:
+    # On non-CPython implementations like PyPy, ctypes subclassing may not work.
+    # Use type() to create the class, which can work better.
+    def _sel_new(cls, init=None):
         if isinstance(init, (bytes, str)):
             self = libobjc.sel_registerName(ensure_bytes(init))
             self._inited = True
             return self
         else:
-            self = super().__new__(cls, init)
+            self = c_void_p.__new__(cls, init)
             self._inited = False
             return self
 
-    def __init__(self, init=None):
-        # See class docstring for usage details.
+    def _sel_init(self, init=None):
         if not self._inited:
-            super().__init__(init)
+            c_void_p.__init__(self, init)
 
-    def __repr__(self):
+    @property
+    def _sel_name(self):
+        """The selector's name as [`bytes`][]."""
+        if self.value is None:
+            raise ValueError("Cannot get name of null selector")
+        return libobjc.sel_getName(self)
+
+    def _sel_repr(self):
         return "{cls.__module__}.{cls.__qualname__}({name!r})".format(
-            cls=type(self), name=None if self.value is None else self.name
+            cls=type(self),
+            name=None if self.value is None else libobjc.sel_getName(self),
         )
 
+    SEL = with_preferred_encoding(b":")(
+        _create_ctypes_subclass(
+            "SEL",
+            c_void_p,
+            {
+                "__doc__": """The [SEL](https://developer.apple.com/documentation/objectivec/sel?language=objc)
+type from `<objc/objc.h>`.
 
-@with_preferred_encoding(b"#")
-class Class(objc_id):
-    # This documentation is duplicated in the runtime typing stub. Ensure both
-    # locations are updated with any changes.
-    """The [Class](https://developer.apple.com/documentation/objectivec/class?language=objc)
-    type from `<objc/objc.h>`.
-    """
+The constructor can be called with a [`bytes`][] or [`str`][] object to
+obtain a selector with that value.
 
-
-class IMP(c_void_p):
-    """The [IMP](https://developer.apple.com/documentation/objectivec/imp?language=objc)
-    type from `<objc/objc.h>`.
-
-    An [`IMP`][rubicon.objc.runtime.IMP] cannot be called directly --- it must be cast
-    to the
-    correct [`CFUNCTYPE`][ctypes.CFUNCTYPE] first, to provide the necessary
-    information about its signature.
-    """
-
-
-class Method(c_void_p):
-    """The [Method](https://developer.apple.com/documentation/objectivec/method?language=objc)
-    type from `<objc/runtime.h>`.
-    """
+(The normal arguments supported by [`c_void_p`][ctypes.c_void_p] are
+still accepted.)
+""",
+                "__new__": staticmethod(_sel_new),
+                "__init__": _sel_init,
+                "name": _sel_name,
+                "__repr__": _sel_repr,
+            },
+        )
+    )
 
 
-class Ivar(c_void_p):
-    """The [Ivar](https://developer.apple.com/documentation/objectivec/ivar?language=objc)
-    type from `<objc/runtime.h>`.
-    """
+if sys.implementation.name == "cpython":
 
+    @with_preferred_encoding(b"#")
+    class Class(objc_id):
+        # This documentation is duplicated in the runtime typing stub. Ensure both
+        # locations are updated with any changes.
+        """The [Class](https://developer.apple.com/documentation/objectivec/class?language=objc)
+        type from `<objc/objc.h>`.
+        """
 
-class objc_property_t(c_void_p):
-    """The [objc_property_t](https://developer.apple.com/documentation/objectivec/objc_property_t?language=objc)
-    type from `<objc/runtime.h>`.
-    """
+    class IMP(c_void_p):
+        """The [IMP][imp] type from `<objc/objc.h>`.
+
+        An [`IMP`][rubicon.objc.runtime.IMP] cannot be called directly --- it
+        must be cast to the correct [`CFUNCTYPE`][ctypes.CFUNCTYPE] first, to
+        provide the necessary information about its signature.
+
+        [imp]: https://developer.apple.com/documentation/objectivec/imp
+        """
+
+    class Method(c_void_p):
+        """The [Method](https://developer.apple.com/documentation/objectivec/method?language=objc)
+        type from `<objc/runtime.h>`.
+        """
+
+    class Ivar(c_void_p):
+        """The [Ivar](https://developer.apple.com/documentation/objectivec/ivar?language=objc)
+        type from `<objc/runtime.h>`.
+        """
+
+    class objc_property_t(c_void_p):
+        """The [objc_property_t](https://developer.apple.com/documentation/objectivec/objc_property_t?language=objc)
+        type from `<objc/runtime.h>`.
+        """
+
+else:
+    Class = with_preferred_encoding(b"#")(
+        _create_ctypes_subclass(
+            "Class",
+            objc_id,
+            {
+                "__doc__": """The [Class](https://developer.apple.com/documentation/objectivec/class?language=objc)
+type from `<objc/objc.h>`.
+""",
+            },
+        )
+    )
+
+    IMP = _create_ctypes_subclass(
+        "IMP",
+        c_void_p,
+        {
+            "__doc__": """The [IMP](https://developer.apple.com/documentation/objectivec/imp?language=objc)
+type from `<objc/objc.h>`.
+
+An [`IMP`][rubicon.objc.runtime.IMP] cannot be called directly --- it must be cast
+to the correct [`CFUNCTYPE`][ctypes.CFUNCTYPE] first, to provide the necessary
+information about its signature.
+""",
+        },
+    )
+
+    Method = _create_ctypes_subclass(
+        "Method",
+        c_void_p,
+        {
+            "__doc__": """The [Method](https://developer.apple.com/documentation/objectivec/method?language=objc)
+type from `<objc/runtime.h>`.
+""",
+        },
+    )
+
+    Ivar = _create_ctypes_subclass(
+        "Ivar",
+        c_void_p,
+        {
+            "__doc__": """The [Ivar](https://developer.apple.com/documentation/objectivec/ivar?language=objc)
+type from `<objc/runtime.h>`.
+""",
+        },
+    )
+
+    objc_property_t = _create_ctypes_subclass(
+        "objc_property_t",
+        c_void_p,
+        {
+            "__doc__": """The [objc_property_t](https://developer.apple.com/documentation/objectivec/objc_property_t?language=objc)
+type from `<objc/runtime.h>`.
+""",
+        },
+    )
 
 
 class objc_property_attribute_t(Structure):
