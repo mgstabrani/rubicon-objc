@@ -355,7 +355,6 @@ if sys.implementation.name == "cpython":
             )
 
 else:
-
     # On non-CPython implementations like PyPy, ctypes subclassing may not work.
     # Use type() to create the class, which can work better.
     def _sel_new(cls, init=None):
