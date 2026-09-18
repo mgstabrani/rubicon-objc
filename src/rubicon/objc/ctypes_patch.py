@@ -91,7 +91,9 @@ SETFUNC = ctypes.PYFUNCTYPE(
 )
 
 
-if sys.version_info < (3, 13) and sys.implementation.name == "cpython":  # pragma: no-cover-if-gte-py313
+if (  # pragma: no-cover-if-gte-py313
+    sys.version_info < (3, 13) and sys.implementation.name == "cpython"
+):
     # The PyTypeObject structure for the dict class.
     # This is used to determine the size of the PyDictObject structure.
     PyDict_Type = PyTypeObject.from_address(id(dict))
