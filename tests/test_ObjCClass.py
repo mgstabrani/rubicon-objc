@@ -3,7 +3,7 @@ from __future__ import annotations
 import functools
 import gc
 import weakref
-from ctypes import c_int
+from ctypes import c_int, c_void_p
 
 import pytest
 
@@ -21,6 +21,13 @@ from rubicon.objc import (
     objc_ivar,
     objc_method,
     objc_property,
+)
+from rubicon.objc import api as api_module
+from rubicon.objc.api import (
+    get_type_for_objcclass_map,
+    register_type_for_objcclass,
+    type_for_objcclass,
+    unregister_type_for_objcclass,
 )
 from rubicon.objc.runtime import (
     autoreleasepool,
@@ -509,3 +516,94 @@ def test_property_forcing():
     assert not callable(NSBundle.mainBundle), (
         "NSBundle.mainBundle should not be a method"
     )
+
+
+def test_property_edges(monkeypatch):
+    """A property without .value is unchanged, and the same object is not reset."""
+
+    class Holder(NSObject):
+        token = objc_property(c_int)
+        item = objc_property()
+
+    real_get_ivar = api_module.get_ivar
+
+    def get_ivar(obj, name, weak=False):
+        if name == "_token":
+            return 0
+        return real_get_ivar(obj, name, weak=weak)
+
+    monkeypatch.setattr(api_module, "get_ivar", get_ivar)
+    obj = Holder.alloc().init()
+    assert obj.token == 0
+
+    item = NSObject.alloc().init()
+    obj.item = item
+    obj.item = item
+    assert obj.item.ptr.value == item.ptr.value
+
+
+def test_type_map():
+    """The class map accepts an ObjCClass or a raw pointer."""
+
+    class Mapped(NSObject):
+        pass
+
+    class PyMapped(ObjCInstance):
+        pass
+
+    register_type_for_objcclass(PyMapped, Mapped)
+    assert type_for_objcclass(Mapped) is PyMapped
+    assert get_type_for_objcclass_map()[Mapped.ptr.value] is PyMapped
+    unregister_type_for_objcclass(Mapped)
+
+    register_type_for_objcclass(PyMapped, Mapped.ptr)
+    unregister_type_for_objcclass(Mapped.ptr)
+
+
+def test_class_errors(monkeypatch):
+    """ObjCClass rejects bad arguments and failed runtime calls."""
+    with pytest.raises(ValueError, match="nil pointer"):
+        ObjCClass(c_void_p(0))
+    with pytest.raises(ValueError, match="exactly one base class"):
+
+        class TwoBases(NSObject, NSObject):
+            pass
+
+    class NotObjC:
+        pass
+
+    with pytest.raises(TypeError, match="must be an ObjCClass"):
+
+        class PlainBase(NotObjC, metaclass=ObjCClass):
+            pass
+
+    with pytest.raises(TypeError, match="ObjCProtocol"):
+
+        class BadProto(NSObject, protocols=[object()]):
+            pass
+
+    with pytest.raises(TypeError, match="arguments 2 and 3"):
+        ObjCClass("NSObject", (NSObject,), None)
+    with pytest.raises(ValueError, match="protocols kwarg"):
+        ObjCClass("NSObject", protocols=[NSObjectProtocol])
+
+    monkeypatch.setattr(libobjc, "objc_allocateClassPair", lambda *args: None)
+    with pytest.raises(RuntimeError, match="Class pair allocation failed"):
+
+        class AllocFails(NSObject):
+            pass
+
+    monkeypatch.undo()
+
+    monkeypatch.setattr(libobjc, "class_addProtocol", lambda *args: False)
+    with pytest.raises(RuntimeError, match="Failed to adopt protocol"):
+
+        class AdoptFails(NSObject, protocols=[NSObjectProtocol]):
+            pass
+
+
+def test_method_cache():
+    """A trailing underscore is not a property, and methods load once."""
+    assert NSObject._cache_property_methods("description_") is None
+    with pytest.raises(RuntimeError, match="_load_methods"):
+        NSObject._load_methods()

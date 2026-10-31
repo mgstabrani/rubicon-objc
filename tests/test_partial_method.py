@@ -96,3 +96,25 @@ def test_with_override():
     # The base class implementation can still be found an invoked.
     obj.method(2)
     assert obj.baseIntField == 2
+
+
+def test_partial_method():
+    """Partial methods reject a missing positional and fill a cold cache."""
+    example = ObjCClass("Example")
+    example.overloaded()
+    owner = example.objc_class
+    while "overloaded" not in owner.partial_methods:
+        owner = owner.superclass
+    partial = owner.partial_methods["overloaded"]
+    saved = dict(partial.methods)
+    try:
+        with pytest.raises(TypeError, match="Missing first"):
+            example.overloaded(extraArg=1)
+
+        partial.methods.clear()
+        assert example.overloaded() == 0
+        partial.methods.clear()
+        assert example.overloaded(12, extraArg=34) == 46
+    finally:
+        partial.methods.clear()
+        partial.methods.update(saved)

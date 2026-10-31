@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from ctypes import c_void_p
+
 import pytest
 
 from rubicon.objc import (
@@ -67,3 +69,9 @@ def test_superclass():
     assert Example.objc_class.superclass == BaseExample.objc_class
     assert BaseExample.objc_class.superclass == NSObject.objc_class
     assert NSObject.objc_class.superclass == NSObject
+
+
+def test_metaclass_nil():
+    """A nil pointer is not a metaclass."""
+    with pytest.raises(ValueError, match="nil pointer"):
+        ObjCMetaClass(c_void_p(0))

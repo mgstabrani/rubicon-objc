@@ -17,10 +17,19 @@ from rubicon.objc import (
     NSObject,
     ObjCClass,
     ObjCInstance,
+    ns_from_py,
+    objc_classmethod,
     py_from_ns,
     types,
 )
-from rubicon.objc.api import get_method_family
+from rubicon.objc.api import (
+    NSData,
+    NSDecimalNumber,
+    NSNumber,
+    ObjCBoundMethod,
+    get_method_family,
+)
+from rubicon.objc.runtime import Class, objc_id
 
 from .conftest import (
     OSX_VERSION,
@@ -356,3 +365,93 @@ def test_no_convert_return():
 )
 def test_get_method_family(method_name, method_family):
     assert get_method_family(method_name) == method_family
+
+
+def test_convert_args_disabled():
+    """convert_args=False forwards arguments unchanged."""
+    example = ObjCClass("Example").alloc().init()
+    method = example.objc_class._cache_method("mutateIntFieldWithValue:")
+    method(example, 41, convert_args=False)
+    assert example.accessIntField() == 41
+
+
+def test_bound_method_class():
+    """A raw Class pointer is stored as an objc_id."""
+    method = NSObject._cache_method("alloc")
+    bound = ObjCBoundMethod(method, cast(NSObject.ptr, Class))
+    assert type(bound.receiver) is objc_id
+
+
+def test_classmethod_results():
+    """Class methods convert object and void-pointer results."""
+
+    class Returns(NSObject):
+        @objc_classmethod
+        def makeObject(cls) -> ObjCInstance:
+            return NSObject.alloc().init()
+
+        @objc_classmethod
+        def makeNil(cls) -> ObjCInstance:
+            return None
+
+        @objc_classmethod
+        def makePtr(cls) -> c_void_p:
+            return c_void_p(5)
+
+    assert isinstance(Returns.makeObject(), ObjCInstance)
+    assert Returns.makeNil() is None
+    assert Returns.makePtr().value == 5
+
+
+def _retag(number, encoding, **values):
+    class Tagged(type(number)):
+        @property
+        def objCType(self):
+            return self._encoding
+
+        def isKindOfClass(self, other):
+            if other == NSDecimalNumber:
+                return False
+            return other == NSNumber
+
+        @property
+        def boolValue(self):
+            return self._values.get("bool")
+
+        @property
+        def unsignedLongLongValue(self):
+            return self._values.get("unsigned")
+
+    object.__setattr__(number, "__class__", Tagged)
+    object.__setattr__(number, "_encoding", encoding)
+    object.__setattr__(number, "_values", values)
+    return number
+
+
+def test_py_from_ns():
+    """py_from_ns converts pointers, scalars, data, and rejects unknown numbers."""
+    assert py_from_ns("plain") == "plain"
+    assert isinstance(py_from_ns(NSObject.alloc().init().ptr), ObjCInstance)
+
+    boolean = _retag(NSNumber.numberWithLong_(1), b"B", bool=True)
+    assert py_from_ns(boolean) is True
+    unsigned = _retag(NSNumber.numberWithLong_(1), b"Q", unsigned=7)
+    assert py_from_ns(unsigned) == 7
+    assert py_from_ns(NSData.dataWithBytes(b"ab", length=2)) == b"ab"
+
+    odd = _retag(NSNumber.numberWithLong_(1), b"?")
+    with pytest.raises(TypeError, match="unsupported type"):
+        py_from_ns(odd)
+
+
+def test_ns_from_py():
+    """ns_from_py accepts enums, bytes, and floats, and rejects other types."""
+
+    class Color(Enum):
+        RED = "red"
+
+    assert str(ns_from_py(Color.RED)) == "red"
+    assert py_from_ns(ns_from_py(b"xyz")) == b"xyz"
+    assert py_from_ns(ns_from_py(1.25)) == pytest.approx(1.25)
+    with pytest.raises(TypeError, match="Don't know how to convert"):
+        ns_from_py(object())

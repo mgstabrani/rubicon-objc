@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ctypes import c_int
+from ctypes import c_int, c_void_p
 
 import pytest
 
@@ -14,8 +14,10 @@ from rubicon.objc import (
     ObjCProtocol,
     at,
     objc_classmethod,
+    objc_ivar,
     objc_method,
     objc_property,
+    objc_rawmethod,
     py_from_ns,
     send_super,
 )
@@ -358,3 +360,43 @@ def test_interface_return_struct():
     outSize = obj.testThing(15)
     assert outSize.width == 5
     assert outSize.height == 45
+
+
+def test_protocol_members():
+    """Protocols cannot declare ivars or raw methods."""
+    with pytest.raises(TypeError, match="cannot have ivars"):
+
+        class HasIvar(NSObjectProtocol):
+            slot = objc_ivar(c_int)
+
+    with pytest.raises(TypeError, match="objc_rawmethod"):
+
+        class HasRaw(NSObjectProtocol):
+            @objc_rawmethod
+            def raw(self, cmd) -> None:
+                pass
+
+
+def test_protocol_errors(monkeypatch):
+    """ObjCProtocol rejects bad arguments and failed allocation."""
+    with pytest.raises(TypeError, match="arguments 2 and 3"):
+        ObjCProtocol("NSObject", (), None)
+    with pytest.raises(ValueError, match="nil pointer"):
+        ObjCProtocol(c_void_p(0))
+
+    class Existing(NSObjectProtocol):
+        pass
+
+    with pytest.raises(RuntimeError, match="already exists"):
+
+        class Existing(NSObjectProtocol):
+            pass
+
+    with pytest.raises(TypeError, match="can only extend"):
+        ObjCProtocol("ExtendsObject", (object(),), {})
+
+    monkeypatch.setattr(libobjc, "objc_allocateProtocol", lambda name: None)
+    with pytest.raises(RuntimeError, match="Protocol allocation failed"):
+
+        class AllocFails(NSObjectProtocol):
+            pass

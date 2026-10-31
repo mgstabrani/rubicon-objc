@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from ctypes import Structure, c_float, c_int, c_void_p
+from ctypes import Structure, byref, c_float, c_int, c_void_p, cast, pointer
 
 import pytest
 
 from rubicon.objc import NSObject, ObjCBlock, ObjCClass, objc_method
-from rubicon.objc.api import Block
-from rubicon.objc.runtime import objc_block
+from rubicon.objc import api as api_module
+from rubicon.objc.api import AUTO, Block, ObjCBlockStruct
+from rubicon.objc.runtime import objc_block, objc_id
 
 
 def test_block_property_ctypes():
@@ -235,3 +236,63 @@ def test_block_bound_method():
 
     returned_two_args_block = instance.roundTrip(two_args_block)
     assert returned_two_args_block(12, 34) == 46
+
+
+def test_nil_block():
+    """A None block argument is passed through as nil."""
+
+    class TakesBlock(NSObject):
+        @objc_method
+        def takeBlock_(self, block: objc_block) -> c_int:
+            return 0 if block is None else 1
+
+    assert TakesBlock.alloc().init().takeBlock_(None) == 0
+
+
+def test_objc_block():
+    """ObjCBlock reports its signature and rejects AUTO without one."""
+    block = ObjCClass("BlockPropertyExample").alloc().init().blockProperty
+    text = repr(ObjCBlock(block, c_int, c_int, c_int))
+    assert text.startswith("<ObjCBlock@")
+    assert "has_signature" in text
+
+    with pytest.raises(ValueError, match="argtypes with restype AUTO"):
+        ObjCBlock(block, AUTO, c_int)
+
+    descriptor_type = api_module.create_block_descriptor_struct(False, False)
+    descriptor = descriptor_type()
+    literal = ObjCBlockStruct()
+    literal.flags = 0
+    literal.descriptor = cast(byref(descriptor), c_void_p)
+    raw = cast(pointer(literal), objc_id)
+    with pytest.raises(ValueError, match="without signatures"):
+        ObjCBlock(raw)
+    assert "has_helpers" not in repr(ObjCBlock(raw, c_int))
+
+    helper = Block(lambda value: value, c_int, c_int)
+    assert "has_helpers" in repr(ObjCBlock(helper.block, c_int, c_int))
+
+
+def test_block():
+    """Block rejects bad callables and tracks copies."""
+    with pytest.raises(TypeError, match="must be callable"):
+        Block(object())
+    with pytest.raises(ValueError, match="without a restype"):
+        Block(lambda value: value, api_module.NOTHING, c_int)
+
+    class Uninspectable:
+        def __call__(self):
+            return None
+
+        @property
+        def __signature__(self):
+            raise ValueError("unavailable")
+
+    with pytest.raises(ValueError, match="signature information"):
+        Block(Uninspectable())
+
+    block = Block(lambda value: value, c_int, c_int)
+    block.copy_helper(1, 2)
+    assert Block._keep_alive_blocks_[1] is block
+    block.dispose_helper(1)
+    assert 1 not in Block._keep_alive_blocks_

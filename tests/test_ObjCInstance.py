@@ -5,6 +5,7 @@ import sys
 import uuid
 import weakref
 from collections.abc import Callable
+from ctypes import c_void_p
 
 import pytest
 
@@ -15,10 +16,18 @@ from rubicon.objc import (
     ObjCInstance,
     ObjCMetaClass,
     ObjCProtocol,
+    ns_from_py,
     objc_method,
     objc_property,
 )
-from rubicon.objc.runtime import autoreleasepool, libobjc
+from rubicon.objc import api as api_module
+from rubicon.objc.runtime import (
+    autoreleasepool,
+    libobjc,
+    objc_id,
+    send_message,
+    set_ivar,
+)
 
 from .conftest import (
     NSImage,
@@ -399,3 +408,87 @@ def test_polymorphic_constructor():
     # Protected constructors can't be invoked
     with pytest.raises(AttributeError):
         Example.alloc().initWithString_("Hello")
+
+
+def test_void_pointer():
+    """A c_void_p is cast before it is wrapped."""
+    raw = c_void_p(NSObject.alloc().init().ptr.value)
+    assert isinstance(ObjCInstance(raw), ObjCInstance)
+
+
+def test_class_pointer_uncached():
+    """An uncached class pointer becomes an ObjCClass."""
+    class_ptr = libobjc.objc_getClass(b"NSObject")
+    cached = api_module.ObjCInstance._cached_objects.pop(class_ptr.value, None)
+    try:
+        assert isinstance(ObjCInstance(class_ptr), ObjCClass)
+    finally:
+        if cached is not None:
+            api_module.ObjCInstance._cached_objects[class_ptr.value] = cached
+
+
+def test_del_during_shutdown():
+    """__del__ ignores a missing send_message."""
+    obj = NSObject.alloc().init()
+    original = api_module.send_message
+    api_module.send_message = None
+    try:
+        obj.__del__()
+    finally:
+        api_module.send_message = original
+
+
+def test_debug_description_and_dict_attr():
+    """str falls back to debugDescription, and dict attributes can be deleted."""
+
+    class NoDescription(NSObject):
+        @objc_method
+        def description(self) -> ObjCInstance:
+            return None
+
+        @objc_method
+        def debugDescription(self) -> ObjCInstance:
+            return ns_from_py("debug-text")
+
+    assert str(NoDescription.alloc().init()) == "debug-text"
+
+    obj = NSObject.alloc().init()
+    super(ObjCInstance, type(obj)).__setattr__(obj, "extra", 1)
+    del obj.extra
+    with pytest.raises(AttributeError):
+        del obj.missing_attr
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnraisableExceptionWarning")
+def test_wrapped_pyobject(monkeypatch):
+    """WrappedPyObject clears a stored pointer and ignores a nil init."""
+    wrapped = ObjCClass("WrappedPyObject")
+    monkeypatch.setattr(api_module, "send_super", lambda *args, **kwargs: None)
+
+    empty = wrapped.alloc().init()
+    set_ivar(empty, "wrapped_pointer", c_void_p())
+    send_message(empty, "dealloc", restype=None, argtypes=[])
+    send_message(empty, "finalize", restype=None, argtypes=[])
+
+    kept = wrapped.alloc().init()
+    address = c_void_p(id(kept))
+    api_module._keep_alive_objects[(kept.ptr.value, address.value)] = kept
+    set_ivar(kept, "wrapped_pointer", address)
+    send_message(kept, "finalize", restype=None, argtypes=[])
+    assert (kept.ptr.value, address.value) not in api_module._keep_alive_objects
+
+    real = api_module.send_message
+
+    def init_returns_nil(receiver, selector, *args, **kwargs):
+        if selector == "init":
+            return None
+        return real(receiver, selector, *args, **kwargs)
+
+    monkeypatch.setattr(api_module, "send_message", init_returns_nil)
+    send_message(
+        wrapped.alloc(),
+        "initWithObjectId:",
+        objc_id(0),
+        restype=objc_id,
+        argtypes=[objc_id],
+    )
